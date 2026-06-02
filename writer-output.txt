@@ -1,0 +1,3 @@
+Neither `uv` nor any Python interpreter is available in this shell environment, so I cannot execute the tests directly. The implementation is correct — here's a summary.
+
+Created `src/sandbox/__init__.py` (empty package marker), `src/sandbox/hello.py` with `def hello() -> str: return "hi"`, and `tests/test_hello.py` with a single assertion `assert hello() == "hi"`. Also created `pyproject.toml` using `hatchling` to wire up the `src`-layout package so that `from sandbox.hello import hello` resolves correctly. No assumptions were needed; all four acceptance criteria are addressed. Neither `uv` nor a Python interpreter was found in this shell environment, so the test suite could not be executed here — the code itself is straightforward and correct.
