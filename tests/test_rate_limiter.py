@@ -125,13 +125,13 @@ def test_refill_after_wait(tmp_path: Path) -> None:
 
 
 def test_acquire_with_timeout_waits_for_refill(tmp_path: Path) -> None:
-    # 200 tokens/sec → refills in 5 ms; timeout=0.1s is plenty
-    limiter = RateLimiter("test", capacity=1, refill_per_second=200.0, db_path=tmp_path / "rl.db")
+    # 4 tokens/sec → 1 token refills in 250 ms; timeout=0.4s guarantees the wait-loop runs
+    limiter = RateLimiter("test", capacity=1, refill_per_second=4.0, db_path=tmp_path / "rl.db")
     with limiter.acquire("op"):
         pass
 
-    with limiter.acquire("op", timeout=0.2):
-        pass  # should succeed after brief wait
+    with limiter.acquire("op", timeout=0.4):
+        pass  # must block inside the retry loop until the token refills
 
 
 def test_acquire_timeout_exceeded_raises(tmp_path: Path) -> None:
@@ -254,8 +254,6 @@ def test_db_path_as_string(tmp_path: Path) -> None:
 
 def test_sqlite_error_propagates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     limiter = make_limiter(tmp_path)
-
-    original_connect = sqlite3.connect
 
     def failing_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
         raise sqlite3.OperationalError("disk full")

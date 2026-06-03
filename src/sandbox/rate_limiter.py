@@ -1,5 +1,6 @@
 import logging
 import sqlite3
+import threading
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -42,6 +43,9 @@ class RateLimiter:
         self._capacity = capacity
         self._refill_per_second = refill_per_second
         self._db_path = db_path
+        # Maps full_key → (wall_at_write, mono_at_write) for same-process elapsed tracking.
+        self._mono_anchors: dict[str, tuple[float, float]] = {}
+        self._anchors_lock = threading.Lock()
 
         self._init_db()
         logger.info(
@@ -83,22 +87,28 @@ class RateLimiter:
             conn.close()
 
     def _try_consume(self, conn: sqlite3.Connection, key: str) -> float | None:
-        """
-        Reads bucket state and consumes one token inside an already-open transaction.
-        Returns None on success, or retry_after_seconds if the bucket is empty.
-        """
-        now = time.time()
+        now_wall = time.time()
+        now_mono = time.monotonic()
+
         row = conn.execute(
             "SELECT tokens, last_refill_at FROM buckets WHERE key = ?", (key,)
         ).fetchone()
 
         if row is None:
             tokens: float = float(self._capacity)
-            last_refill_at: float = now
         else:
             stored_tokens, last_refill_at = row
-            # max(0) guards against backward wall-clock jumps
-            elapsed = max(0.0, now - last_refill_at)
+
+            with self._anchors_lock:
+                anchor = self._mono_anchors.get(key)
+
+            if anchor is not None and anchor[0] == last_refill_at:
+                # This process wrote last_refill_at — use monotonic to avoid NTP jumps.
+                elapsed = max(0.0, now_mono - anchor[1])
+            else:
+                # Cross-process write or first access: wall-clock is the only reference.
+                elapsed = max(0.0, now_wall - last_refill_at)
+
             tokens = min(float(self._capacity), stored_tokens + elapsed * self._refill_per_second)
 
         if tokens >= 1.0:
@@ -110,8 +120,10 @@ class RateLimiter:
                     tokens = excluded.tokens,
                     last_refill_at = excluded.last_refill_at
                 """,
-                (key, tokens - 1.0, now),
+                (key, tokens - 1.0, now_wall),
             )
+            with self._anchors_lock:
+                self._mono_anchors[key] = (now_wall, now_mono)
             logger.debug("Consumed token for %s; remaining=%.3f", key, tokens - 1.0)
             return None
 
